@@ -74,6 +74,11 @@ export type AccountDetails = {
   hdPath?: string;
 };
 
+type PublicHdKeyContent = {
+  chainCode: string;
+  publicKey: string;
+};
+
 export type LedgerBridgeKeyringOptions = {
   hdPath: string;
   accounts: readonly string[];
@@ -81,6 +86,9 @@ export type LedgerBridgeKeyringOptions = {
   accountIndexes: Readonly<Record<string, number>>;
   bridgeUrl: string;
   implementFullBIP44: boolean;
+  page: number;
+  unlockedAccount: number;
+  hdk: PublicHdKeyContent;
 };
 
 /**
@@ -221,15 +229,26 @@ export class LedgerBridgeKeyring extends EventEmitter {
       accounts: this.accounts,
       accountDetails: this.accountDetails,
       bridgeUrl: this.bridgeUrl,
-      implementFullBIP44: false,
+      implementFullBIP44: this.implementFullBIP44,
+      page: this.page,
+      unlockedAccount: this.unlockedAccount,
     });
   }
 
   async deserialize(opts: Partial<LedgerBridgeKeyringOptions> = {}) {
-    this.hdPath = opts.hdPath ?? hdPathString;
+    if (opts.hdk) {
+      this.#setHdk(opts.hdk);
+    }
+
+    if (this.hdPath) {
+      this.setHdPath(this.hdPath);
+    }
     this.bridgeUrl = opts.bridgeUrl ?? BRIDGE_URL;
     this.accounts = opts.accounts ?? [];
     this.accountDetails = opts.accountDetails ?? {};
+    this.page = opts.page ?? 0;
+    this.unlockedAccount = opts.unlockedAccount ?? 0;
+
     if (!opts.accountDetails) {
       this.#migrateAccountDetails(opts);
     }
@@ -299,6 +318,11 @@ export class LedgerBridgeKeyring extends EventEmitter {
     this.hdPath = hdPath;
   }
 
+  #setHdk({ publicKey, chainCode }: PublicHdKeyContent) {
+    this.hdk.publicKey = Buffer.from(publicKey, 'hex');
+    this.hdk.chainCode = Buffer.from(chainCode, 'hex');
+  }
+
   async unlock(hdPath?: string, updateHdk = true): Promise<string> {
     if (this.isUnlocked() && !hdPath) {
       return Promise.resolve('already unlocked');
@@ -315,11 +339,8 @@ export class LedgerBridgeKeyring extends EventEmitter {
         ({ success, payload }) => {
           if (success && isGetAddressMessageResponse(payload)) {
             if (updateHdk) {
-              this.hdk.publicKey = Buffer.from(payload.publicKey, 'hex');
-              this.hdk.chainCode = Buffer.from(
-                payload.chainCode as string,
-                'hex',
-              );
+              // @TODO, investigate payload type
+              this.#setHdk(payload);
             }
             resolve(payload.address);
           } else {
