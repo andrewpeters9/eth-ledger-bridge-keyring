@@ -240,7 +240,7 @@ export class LedgerBridgeKeyring extends EventEmitter {
       this.#setHdk(opts.hdk);
     }
 
-    if (this.hdPath) {
+    if (opts.hdPath) {
       this.setHdPath(this.hdPath);
     }
     this.bridgeUrl = opts.bridgeUrl ?? BRIDGE_URL;
