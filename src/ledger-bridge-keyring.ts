@@ -39,7 +39,8 @@ type IFrameMessage = {
   messageId: number;
 };
 
-type GetAddressPayload = Awaited<ReturnType<LedgerHwAppEth['getAddress']>>;
+type GetAddressPayloadPromise = ReturnType<LedgerHwAppEth['getAddress']>;
+type GetAddressPayload = Awaited<GetAddressPayloadPromise>;
 
 type SignMessagePayload = Awaited<
   ReturnType<LedgerHwAppEth['signEIP712HashedMessage']>
@@ -72,6 +73,12 @@ export type AccountDetails = {
   index?: number;
   bip44?: boolean;
   hdPath?: string;
+};
+
+export type LegacyAccountDetails = {
+  address: string;
+  balance: number | null;
+  index: number;
 };
 
 type PublicHdKeyContent = {
@@ -236,24 +243,25 @@ export class LedgerBridgeKeyring extends EventEmitter {
   }
 
   async deserialize(opts: Partial<LedgerBridgeKeyringOptions> = {}) {
+    if (opts.hdPath) {
+      this.setHdPath(opts.hdPath);
+    }
+
     if (opts.hdk) {
       this.#setHdk(opts.hdk);
     }
 
-    if (opts.hdPath) {
-      this.setHdPath(this.hdPath);
+    if (opts.bridgeUrl) {
+      this.#setBridgeUrl(opts.bridgeUrl);
     }
-    this.bridgeUrl = opts.bridgeUrl ?? BRIDGE_URL;
+
     this.accounts = opts.accounts ?? [];
     this.accountDetails = opts.accountDetails ?? {};
     this.page = opts.page ?? 0;
     this.unlockedAccount = opts.unlockedAccount ?? 0;
-
-    if (!opts.accountDetails) {
-      this.#migrateAccountDetails(opts);
-    }
-
     this.implementFullBIP44 = opts.implementFullBIP44 ?? false;
+
+    this.#migrateAccountDetails(opts);
 
     // Remove accounts that don't have corresponding account details
     this.accounts = this.accounts.filter((account) =>
@@ -338,8 +346,7 @@ export class LedgerBridgeKeyring extends EventEmitter {
         },
         ({ success, payload }) => {
           if (success && isGetAddressMessageResponse(payload)) {
-            if (updateHdk) {
-              // @TODO, investigate payload type
+            if (updateHdk && payload.chainCode) {
               this.#setHdk(payload);
             }
             resolve(payload.address);
@@ -359,12 +366,7 @@ export class LedgerBridgeKeyring extends EventEmitter {
           const to = from + amount;
           for (let i = from; i < to; i++) {
             const path = this.#getPathForIndex(i);
-            let address;
-            if (this.#isLedgerLiveHdPath()) {
-              address = await this.unlock(path);
-            } else {
-              address = this.#addressFromIndex(pathBase, i);
-            }
+            const address = await this.#getLedgerAddress(path, i);
 
             this.accountDetails[ethUtil.toChecksumAddress(address)] = {
               // TODO: consider renaming this property, as the current name is misleading
@@ -382,6 +384,14 @@ export class LedgerBridgeKeyring extends EventEmitter {
         })
         .catch(reject);
     });
+  }
+
+  async #getLedgerAddress(path: string, i: number) {
+    if (this.#isLedgerLiveHdPath()) {
+      return await this.unlock(path);
+    }
+
+    return this.#addressFromIndex(pathBase, i);
   }
 
   async getFirstPage() {
@@ -402,9 +412,11 @@ export class LedgerBridgeKeyring extends EventEmitter {
   }
 
   removeAccount(address: string) {
-    if (
-      !this.accounts.map((a) => a.toLowerCase()).includes(address.toLowerCase())
-    ) {
+    const includesAddress = this.accounts
+      .map((a) => a.toLowerCase())
+      .includes(address.toLowerCase());
+
+    if (!includesAddress) {
       throw new Error(`Address ${address} not found in this keyring`);
     }
 
@@ -730,6 +742,7 @@ export class LedgerBridgeKeyring extends EventEmitter {
     this.unlockedAccount = 0;
     this.paths = {};
     this.accountDetails = {};
+    this.bridgeUrl = BRIDGE_URL;
     this.hdk = new HDKey();
   }
 
@@ -737,7 +750,7 @@ export class LedgerBridgeKeyring extends EventEmitter {
 
   #setupIframe() {
     this.iframe = document.createElement('iframe');
-    this.iframe.src = this.bridgeUrl;
+    this.#setBridgeUrl(this.bridgeUrl);
     this.iframe.allow = `hid 'src'`;
     this.iframe.onload = async () => {
       // If the ledger live preference was set before the iframe is loaded,
@@ -822,21 +835,21 @@ export class LedgerBridgeKeyring extends EventEmitter {
     const to = from + this.perPage;
 
     await this.unlock();
-    let accounts;
-    if (this.#isLedgerLiveHdPath()) {
-      accounts = await this.#getAccountsBIP44(from, to);
-    } else {
-      accounts = this.#getAccountsLegacy(from, to);
-    }
+    const accounts = await this.#getPageAccounts(from, to);
+
     return accounts;
   }
 
+  async #getPageAccounts(from: number, to: number) {
+    if (this.#isLedgerLiveHdPath()) {
+      return this.#getAccountsBIP44(from, to);
+    }
+
+    return this.#getAccountsLegacy(from, to);
+  }
+
   async #getAccountsBIP44(from: number, to: number) {
-    const accounts: {
-      address: string;
-      balance: number | null;
-      index: number;
-    }[] = [];
+    let accounts: readonly LegacyAccountDetails[] = [];
 
     for (let i = from; i < to; i++) {
       const path = this.#getPathForIndex(i);
@@ -844,12 +857,8 @@ export class LedgerBridgeKeyring extends EventEmitter {
       const valid = this.implementFullBIP44
         ? await this.#hasPreviousTransactions(address)
         : true;
-      accounts.push({
-        address,
-        balance: null,
-        index: i,
-      });
 
+      accounts = [...accounts, { address, balance: null, index: i }];
       // PER BIP44
       // "Software should prevent a creation of an account if
       // a previous account does not have a transaction history
@@ -862,21 +871,21 @@ export class LedgerBridgeKeyring extends EventEmitter {
   }
 
   #getAccountsLegacy(from: number, to: number) {
-    const accounts: {
-      address: string;
-      balance: number | null;
-      index: number;
-    }[] = [];
+    let accounts: LegacyAccountDetails[] = [];
 
     for (let i = from; i < to; i++) {
       const address = this.#addressFromIndex(pathBase, i);
-      accounts.push({
-        address,
-        balance: null,
-        index: i,
-      });
+      accounts = [
+        ...accounts,
+        {
+          address,
+          balance: null,
+          index: i,
+        },
+      ];
       this.paths[ethUtil.toChecksumAddress(address)] = i;
     }
+
     return accounts;
   }
 
@@ -935,5 +944,13 @@ export class LedgerBridgeKeyring extends EventEmitter {
 
   #getApiUrl() {
     return this.network;
+  }
+
+  #setBridgeUrl(bridgeUrl: string) {
+    this.bridgeUrl = bridgeUrl;
+
+    if (this.iframe) {
+      this.iframe.src = this.bridgeUrl;
+    }
   }
 }
