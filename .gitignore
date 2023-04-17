@@ -3,6 +3,10 @@ dist/
 coverage/
 docs/
 
+# IDE-Specific Settings
+.idea/
+.vscode/
+
 # Logs
 logs
 *.log

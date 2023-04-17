@@ -9,6 +9,7 @@ import * as ethUtil from 'ethereumjs-util';
 // eslint-disable-next-line import/no-nodejs-modules
 import { EventEmitter } from 'events';
 import HDKey from 'hdkey';
+import { v4 as uuidv4 } from 'uuid';
 
 const pathBase = 'm';
 const hdPathString = `${pathBase}/44'/60'/0'`;
@@ -53,15 +54,16 @@ type ConnectionChangedPayload = {
   connected: boolean;
 };
 
-type IFrameMessage = {
+type IFrameMessage = Readonly<{
   action: IFrameMessageAction;
   params?: Readonly<Record<string, unknown>>;
-};
+}>;
 
-type IFramePostMessage = IFrameMessage & {
-  messageId: number;
-  target: typeof LEDGER_IFRAME_ID;
-};
+type IFramePostMessage = IFrameMessage &
+  Readonly<{
+    messageId: ReturnType<typeof uuidv4>;
+    target: typeof LEDGER_IFRAME_ID;
+  }>;
 
 type IFrameMessageResponsePayload = { error?: Error } & (
   | GetAddressPayload
@@ -73,7 +75,7 @@ type IFrameMessageResponsePayload = { error?: Error } & (
 export type IFrameMessageResponse = {
   success: boolean;
   action: IFrameMessageAction;
-  messageId: number;
+  messageId: ReturnType<typeof uuidv4>;
   payload: IFrameMessageResponsePayload;
   error?: unknown;
 };
@@ -193,10 +195,10 @@ export class LedgerBridgeKeyring extends EventEmitter {
 
   isDeviceConnected = false;
 
-  currentMessageId = 0;
-
-  messageCallbacks: Record<number, (response: IFrameMessageResponse) => void> =
-    {};
+  messageCallbacks: Record<
+    ReturnType<typeof uuidv4>,
+    (response: IFrameMessageResponse) => void
+  > = {};
 
   bridgeUrl: string = BRIDGE_URL;
 
@@ -213,9 +215,7 @@ export class LedgerBridgeKeyring extends EventEmitter {
 
     // eslint-disable-next-line @typescript-eslint/no-floating-promises
     this.deserialize(opts);
-
     this.#setupIframe();
-
     this.#setupListener();
   }
 
@@ -769,15 +769,14 @@ export class LedgerBridgeKeyring extends EventEmitter {
     message: IFrameMessage,
     callback: (response: IFrameMessageResponse) => void,
   ) {
-    this.currentMessageId += 1;
-
+    const messageId = uuidv4();
     const postMsg: IFramePostMessage = {
       ...message,
-      messageId: this.currentMessageId,
       target: LEDGER_IFRAME_ID,
+      messageId,
     };
 
-    this.messageCallbacks[this.currentMessageId] = callback;
+    this.messageCallbacks[messageId] = callback;
 
     if (!this.iframeLoaded || !this.iframe || !this.iframe.contentWindow) {
       throw new Error('The iframe is not loaded yet');
