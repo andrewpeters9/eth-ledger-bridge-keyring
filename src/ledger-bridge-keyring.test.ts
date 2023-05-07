@@ -10,11 +10,6 @@ import * as ethUtil from 'ethereumjs-util';
 import HDKey from 'hdkey';
 
 import { AccountDetails, LedgerBridgeKeyring } from './ledger-bridge-keyring';
-import documentShim from '../test/document.shim';
-import windowShim from '../test/window.shim';
-
-global.document = documentShim;
-global.window = windowShim;
 
 // eslint-disable-next-line no-restricted-globals
 type HTMLIFrameElementShim = HTMLIFrameElement;
